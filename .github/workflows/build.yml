@@ -13,7 +13,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Python
+    - name: Set up Python 3.10
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
@@ -25,7 +25,7 @@ jobs:
           git \
           zip \
           unzip \
-          openjdk-17-jdk \
+          openjdk-11-jdk \
           build-essential \
           libssl-dev \
           libffi-dev \
@@ -38,42 +38,94 @@ jobs:
           libltdl-dev \
           python3-dev \
           wget \
-          lld
+          lld \
+          ccache
+
+    - name: Set Java 11
+      run: |
+        sudo update-alternatives --set java \
+          /usr/lib/jvm/java-11-openjdk-amd64/bin/java
+        java -version
 
     - name: Install Python dependencies
       run: |
-        pip install --upgrade pip
-        pip install buildozer
+        pip install --upgrade pip setuptools wheel
+        pip install buildozer==1.5.0
         pip install cython==0.29.33
 
-    - name: Cache buildozer global directory
-      uses: actions/cache@v4
-      with:
-        path: ~/.buildozer
-        key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-        restore-keys: |
-          buildozer-${{ runner.os }}-
+    - name: Install Android SDK manually
+      run: |
+        # Скачиваем cmdline-tools
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+        unzip -q commandlinetools-linux-9477386_latest.zip
+        mkdir -p $HOME/android-sdk/cmdline-tools/latest
+        mv cmdline-tools/* $HOME/android-sdk/cmdline-tools/latest/
 
-    - name: Cache buildozer local directory
+        # Устанавливаем переменные
+        echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+        echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+        echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+        echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+        echo "$HOME/android-sdk/build-tools/31.0.0" >> $GITHUB_PATH
+
+    - name: Accept licenses and install SDK components
+      run: |
+        export ANDROID_HOME=$HOME/android-sdk
+        export ANDROID_SDK_ROOT=$HOME/android-sdk
+        
+        # Принимаем лицензии
+        yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager \
+          --licenses 2>/dev/null || true
+        
+        # Устанавливаем нужные компоненты
+        $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager \
+          "platforms;android-31" \
+          "build-tools;31.0.0" \
+          "platform-tools" \
+          "ndk;23.2.8568313"
+
+        # Проверяем aidl
+        find $HOME/android-sdk -name "aidl" 2>/dev/null
+        echo "ANDROID_NDK=$HOME/android-sdk/ndk/23.2.8568313" >> $GITHUB_ENV
+
+    - name: Cache buildozer
       uses: actions/cache@v4
       with:
-        path: .buildozer
-        key: buildozer-local-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+        path: |
+          ~/.buildozer
+          .buildozer
+        key: buildozer-${{ runner.os }}-v2-${{ hashFiles('buildozer.spec') }}
         restore-keys: |
-          buildozer-local-${{ runner.os }}-
+          buildozer-${{ runner.os }}-v2-
+
+    - name: Create buildozer home dirs
+      run: |
+        mkdir -p ~/.buildozer/android/platform
+        
+        # Линкуем SDK чтобы buildozer его нашёл
+        ln -sf $HOME/android-sdk \
+          ~/.buildozer/android/platform/android-sdk
+        
+        # Линкуем NDK
+        ln -sf $HOME/android-sdk/ndk/23.2.8568313 \
+          ~/.buildozer/android/platform/android-ndk-r23b
 
     - name: Build APK
+      env:
+        ANDROID_HOME: /home/runner/android-sdk
+        ANDROID_SDK_ROOT: /home/runner/android-sdk
+        ANDROID_NDK: /home/runner/android-sdk/ndk/23.2.8568313
       run: |
-        buildozer android debug
+        buildozer android debug 2>&1
 
-    - name: Show APK info
+    - name: Find and show APK
       run: |
-        ls -la bin/
-        echo "APK built successfully!"
+        find . -name "*.apk" 2>/dev/null
+        ls -la bin/ || echo "bin/ not found"
 
-    - name: Upload APK artifact
+    - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: vpn-shield-debug-apk
+        name: VPNShield-APK
         path: bin/*.apk
         retention-days: 30
